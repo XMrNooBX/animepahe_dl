@@ -1,0 +1,12 @@
+# Session cache (contains cookies — never commit)
+.session_cache.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Downloads
+*.mp4
+
+# Environment
+.env
