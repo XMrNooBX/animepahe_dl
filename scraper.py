@@ -80,6 +80,170 @@ _LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads.
 
 
 @dataclass
+class EpisodeMeta:
+    """Episode metadata for embedding in MP4."""
+    episode: int
+    title: str = ""
+    duration: str = ""  # HH:MM:SS format
+    snapshot_url: str = ""
+    audio: str = ""
+    
+    def duration_seconds(self) -> int:
+        """Parse duration string (HH:MM:SS) to seconds."""
+        try:
+            parts = self.duration.split(':')
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            elif len(parts) == 2:
+                return int(parts[0]) * 60 + int(parts[1])
+        except Exception:
+            pass
+        return 0
+    
+    def chapter_times(self) -> list[int]:
+        """Generate chapter timestamps in seconds."""
+        total = self.duration_seconds()
+        if total <= 0:
+            return []
+        
+        # Typical anime structure: OP at ~1:30, content, ED at ~-1:30
+        # We'll create chapters at: start, after OP (~90s), before ED (~-90s), end
+        chapters = [0]
+        
+        if total > 300:  # 5+ minutes
+            # Add chapter after typical OP (1:30 = 90s)
+            chapters.append(min(90, total // 4))
+            # Add chapter before typical ED (1:30 before end)
+            if total > 180:
+                chapters.append(max(total - 90, chapters[-1] + 60))
+        
+        chapters.append(total)
+        return sorted(set(chapters))
+
+
+def fetch_episode_meta(anime_id: str, ep_session: str) -> EpisodeMeta | None:
+    """Fetch episode metadata from the episode page."""
+    try:
+        url = f"{BASE_URL}/play/{anime_id}/{ep_session}"
+        resp = _get(url, referer=f"{BASE_URL}/")
+        resp.raise_for_status()
+        html = resp.text
+        
+        # Extract snapshot/thumbnails from the page - prefer i.animepahe.pw uploads URLs
+        snapshot_match = re.search(
+            r'(https?://i\.animepahe\.pw/uploads/snapshots/[^\s"\'`]+)', html, re.IGNORECASE
+        )
+        snapshot_url = snapshot_match.group(1) if snapshot_match else ""
+        
+        # Also check for episode title in the page
+        title_match = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
+        title = title_match.group(1).strip() if title_match else ""
+        
+        # Extract duration from the page
+        duration = ""
+        audio = ""
+        
+        # Try to find duration in the HTML (multiple patterns)
+        dur_patterns = [
+            r'duration[\s:="\'`]*([0-9:]{5,8})',
+            r'(\d{2}:\d{2}:\d{2})',
+            r'"duration"\s*:\s*"([^"]+)"',
+        ]
+        for pattern in dur_patterns:
+            dur_match = re.search(pattern, html, re.IGNORECASE)
+            if dur_match:
+                duration = dur_match.group(1)
+                break
+        
+        # Try audio
+        aud_match = re.search(r'audio[\s:="\'`]*(eng|jpn|sub|dub)', html, re.IGNORECASE)
+        if aud_match:
+            audio = aud_match.group(1).upper()
+        
+        return EpisodeMeta(
+            episode=0,  # Will be set by caller
+            title=title,
+            duration=duration,
+            snapshot_url=snapshot_url,
+            audio=audio,
+        )
+    except Exception as e:
+        _log_event("meta_fetch_failed", error=str(e), anime_id=anime_id, ep_session=ep_session)
+        return None
+
+
+def fetch_all_episode_meta(anime_id: str, eps: dict) -> dict[int, EpisodeMeta]:
+    """Fetch metadata for all episodes using release API data + play page for extra info."""
+    meta = {}
+    
+    # First, get release data which has duration
+    # We need to fetch all pages to get duration for all episodes
+    page_resp = _get(f"{BASE_URL}/api?m=release&id={anime_id}&sort=episode_asc&page=1")
+    page_resp.raise_for_status()
+    first_page = page_resp.json()
+    last_page = first_page.get("last_page", 1)
+    
+    # Build duration map from release API
+    duration_map = {}
+    for page in range(1, last_page + 1):
+        if page == 1:
+            page_data = first_page
+        else:
+            resp = _get(f"{BASE_URL}/api?m=release&id={anime_id}&sort=episode_asc&page={page}")
+            resp.raise_for_status()
+            page_data = resp.json()
+        
+        for ep in page_data.get("data", []):
+            ep_num = ep["episode"]
+            if isinstance(ep_num, float) and ep_num == int(ep_num):
+                ep_num = int(ep_num)
+            duration_map[ep_num] = ep.get("duration", "")
+    
+    # Now fetch play page data for each episode
+    for ep_num, ep_session in eps.items():
+        ep_meta = fetch_episode_meta(anime_id, ep_session)
+        if ep_meta:
+            ep_meta.episode = int(ep_num) if isinstance(ep_num, (int, float)) and ep_num == int(ep_num) else ep_num
+            # Override duration with release API data (more reliable)
+            if ep_meta.episode in duration_map:
+                ep_meta.duration = duration_map[ep_meta.episode]
+            meta[ep_meta.episode] = ep_meta
+    
+    return meta
+
+
+def download_thumbnail(url: str, tmp_dir: str) -> str | None:
+    """Download thumbnail image to temp dir."""
+    if not url:
+        return None
+    try:
+        headers = {
+            "User-Agent": _user_agent,
+            "Referer": BASE_URL + "/",
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        
+        # Determine extension from URL or content-type
+        ext = ".webp"
+        if url.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+            ext = os.path.splitext(url)[1]
+        elif 'image/jpeg' in resp.headers.get('Content-Type', ''):
+            ext = '.jpg'
+        elif 'image/png' in resp.headers.get('Content-Type', ''):
+            ext = '.png'
+        
+        thumb_path = os.path.join(tmp_dir, f"cover{ext}")
+        with open(thumb_path, "wb") as f:
+            f.write(resp.content)
+        
+        return thumb_path
+    except Exception as e:
+        _log_event("thumb_download_failed", error=str(e), url=url)
+        return None
+
+
+@dataclass
 class TokenBucket:
     """Token bucket rate limiter for controlling CDN connection concurrency."""
     rate: int
@@ -707,7 +871,8 @@ def _sanitize(name: str) -> str:
 
 # ── Parallel HLS downloader with resume & rate limiting ───────────────────────
 
-def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/"):
+def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/", 
+                  meta: EpisodeMeta | None = None):
     """
     Download HLS stream to  <title>/<title> ep_XX.mp4.
 
@@ -717,6 +882,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
       3. Download the encryption key
       4. Build a LOCAL m3u8 referencing local files + key
       5. Feed the local m3u8 to ffmpeg (decrypts + muxes to mp4)
+      6. Embed cover art and chapters from metadata
     """
     safe_title = _sanitize(title)
     ep_str = f"{int(ep):02d}" if isinstance(ep, (int, float)) and ep == int(ep) else str(ep)
@@ -1026,11 +1192,61 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
                 f.write(stripped + "\n")
 
     # ── Step 5: ffmpeg decrypts + muxes to mp4 (local I/O, fast) ──────────────
+    # Also embed metadata (cover art, chapters) if available
     print(Fore.WHITE + "  Decrypting + muxing to mp4…" + Fore.RESET, end=" ", flush=True)
+    
+    # Prepare metadata args
+    meta_args = []
+    chapter_file = None
+    thumb_path = None
+    
+    if meta:
+        # Download thumbnail/cover art
+        if meta.snapshot_url:
+            thumb_path = download_thumbnail(meta.snapshot_url, tmp_dir)
+            if thumb_path:
+                meta_args.extend(["-i", thumb_path])
+                meta_args.extend([
+                    "-map", "0:v", "-map", "0:a",
+                    "-map", "1:v",
+                    "-disposition:v:1", "attached_pic",
+                    "-c:v:1", "mjpeg",
+                ])
+        
+        # Generate chapter metadata file
+        chapters = meta.chapter_times()
+        if len(chapters) > 1:
+            chapter_file = os.path.join(tmp_dir, "chapters.txt")
+            with open(chapter_file, "w", encoding="utf-8") as f:
+                f.write(";FFMETADATA1\n")
+                for i, start in enumerate(chapters):
+                    end = chapters[i + 1] if i + 1 < len(chapters) else meta.duration_seconds()
+                    f.write(f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={start * 1000}\nEND={end * 1000}\n")
+                    if i == 0:
+                        f.write("title=Start\n")
+                    elif i == len(chapters) - 1:
+                        f.write("title=End\n")
+                    elif i == 1:
+                        f.write("title=Opening\n")
+                    elif i == len(chapters) - 2:
+                        f.write("title=Ending\n")
+                    else:
+                        f.write(f"title=Part {i}\n")
+            meta_args.extend(["-i", chapter_file, "-map_metadata", "1", "-map_chapters", "1"])
+        
+        # Add basic metadata
+        if meta.title:
+            meta_args.extend(["-metadata", f"title={meta.title}"])
+        meta_args.extend([
+            "-metadata", f"episode_id={meta.episode}",
+            "-metadata", f"show={safe_title}",
+        ])
+    
     cmd = [
         "ffmpeg",
         "-allowed_extensions", "ALL",
         "-i", local_m3u8_path,
+    ] + meta_args + [
         "-c", "copy",
         "-bsf:a", "aac_adtstoasc",
         "-movflags", "+faststart",
