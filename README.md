@@ -22,8 +22,8 @@ It automatically solves Cloudflare challenges using an undetected Chrome instanc
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/animepahe-downloader.git
-   cd animepahe-downloader
+   git clone https://github.com/XMrNooBX/animepahe_dl.git
+   cd animepahe_dl
    ```
 
 2. **Install dependencies:**

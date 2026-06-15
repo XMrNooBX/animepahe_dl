@@ -27,7 +27,7 @@ from kwik import get_stream_url
 init(autoreset=True)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# === Helpers ===================================================================================================─
 
 def parse_episode_input(raw: str, available: set) -> list:
     ep_in = []
@@ -68,7 +68,7 @@ def _check_cloudflare(resp):
         sys.exit(1)
 
 
-# ── Main flow ─────────────────────────────────────────────────────────────────
+# === Main flow ================================================================================================─
 
 def main():
     # 1. Init session (cached cookies or nodriver)
@@ -153,7 +153,7 @@ def main():
 
     for i, ep in enumerate(ep_list):
         ep_session = eps[ep]
-        print(Fore.LIGHTGREEN_EX + f"\n── Episode {ep} ──" + Fore.RESET)
+        print(Fore.LIGHTGREEN_EX + f"\n=== Episode {ep} ===" + Fore.RESET)
 
         try:
             links = scraper.get_ep_links(anime_id, ep_session)
@@ -192,7 +192,7 @@ def main():
 
             if apply_all:
                 saved_quality = choice
-                print(Fore.GREEN + "Quality choice saved for remaining episodes ✓" + Fore.RESET)
+                print(Fore.GREEN + "Quality choice saved for remaining episodes [OK]" + Fore.RESET)
 
         kwik_url = kwik_urls[choice]
 
@@ -203,16 +203,16 @@ def main():
             continue
 
         dl_queue[ep] = m3u8
-        print(Fore.GREEN + "Stream resolved ✓" + Fore.RESET)
+        print(Fore.GREEN + "Stream resolved [OK]" + Fore.RESET)
 
     if not dl_queue:
         print(Fore.RED + "\nNothing to download.")
         sys.exit(1)
 
     # 8. Download
-    print(Fore.CYAN + f"\n{'─'*40}" + Fore.RESET)
-    print(Fore.CYAN + f"Downloading {len(dl_queue)} episode(s)…" + Fore.RESET)
-    print(Fore.CYAN + f"{'─'*40}" + Fore.RESET)
+    print(Fore.CYAN + f"\n{'='*40}" + Fore.RESET)
+    print(Fore.CYAN + f"Downloading {len(dl_queue)} episode(s)..." + Fore.RESET)
+    print(Fore.CYAN + f"{'='*40}" + Fore.RESET)
 
     for ep, m3u8 in dl_queue.items():
         scraper.download_vid(m3u8, title, ep)
