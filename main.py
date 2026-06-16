@@ -54,22 +54,33 @@ def parse_episode_input(raw: str, available: set) -> list:
         if "-" in token:
             parts = token.split("-")
             try:
-                start, end = int(parts[0]), int(parts[-1])
-                ep_in.extend(range(start, end + 1))
+                start = float(parts[0])
+                end = float(parts[-1])
+                # Generate sequence with step 1 for integer parts, or step for fractional
+                if start == int(start) and end == int(end):
+                    ep_in.extend(range(int(start), int(end) + 1))
+                else:
+                    # Handle fractional episodes with 0.5 step
+                    current = start
+                    while current <= end + 1e-9:  # small epsilon for float comparison
+                        ep_in.append(current)
+                        current += 1.0
             except ValueError:
-                print(Fore.RED + f"[skip] bad range: {token}")
+                print(Fore.RED + f"[skip] bad range: {token}" + Fore.RESET)
         else:
             try:
-                ep_in.append(int(token))
+                ep_in.append(float(token))
             except ValueError:
-                print(Fore.RED + f"[skip] bad token: {token}")
+                print(Fore.RED + f"[skip] bad token: {token}" + Fore.RESET)
 
     valid = []
+    # Convert available to floats for comparison
+    available_floats = set(float(x) for x in available)
     for ep in sorted(set(ep_in)):
-        if ep in available:
+        if ep in available_floats:
             valid.append(ep)
         else:
-            print(Fore.YELLOW + f"[warn] episode {ep} not found, skipping")
+            print(Fore.YELLOW + f"[warn] episode {ep} not found, skipping" + Fore.RESET)
     return valid
 
 
@@ -85,14 +96,12 @@ def parse_quality_arg(qarg: str) -> int | None:
         if 1 <= idx <= 6:
             return idx - 1
     
-    # Try resolution+type patterns
-    # 360p, 720p, 1080p, 360sub, 720dub, etc.
+    # Try resolution+type patterns based on audio type
     for idx, (res, typ) in QUALITY_MAP.items():
-        patterns = [
-            f"{res}p", f"{res}sub", f"{res}dub",
-            f"{res} sub", f"{res} dub",
-            f"{res.lower()}p", f"{res.lower()}sub", f"{res.lower()}dub",
-        ]
+        if typ == "Sub":
+            patterns = [f"{res}p", f"{res}sub", f"{res} sub", f"{res.lower()}p", f"{res.lower()}sub", f"{res.lower()} sub"]
+        else:  # Dub
+            patterns = [f"{res}dub", f"{res} dub", f"{res.lower()}dub", f"{res.lower()} dub"]
         if qarg in patterns:
             return idx - 1
     
@@ -107,7 +116,7 @@ def _check_cloudflare(resp):
         print(Fore.YELLOW +
               "To fix this, choose one of:\n"
               "  A) Install nodriver:  pip install nodriver  (automatic)\n"
-              "  B) Open animepahe.org in your browser, wait for it to load,\n"
+              "  B) Open animepahe.pw in your browser, wait for it to load,\n"
               "     then copy the 'cf_clearance' cookie value and set:\n"
               "     set ANIMEPAHE_CF_CLEARANCE=<your_cookie_value>" +
               Fore.RESET)

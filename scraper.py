@@ -28,10 +28,8 @@ import shutil
 import warnings
 import concurrent.futures
 import threading
-import json
 import hashlib
 import random
-import time
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any
 
@@ -236,36 +234,22 @@ def download_thumbnail(url: str, tmp_dir: str) -> str | None:
         return None
 
 
-@dataclass
-class TokenBucket:
-    """Token bucket rate limiter for controlling CDN connection concurrency."""
-    rate: int
-    tokens: float = 0
-    last_update: float = 0
-    _lock: threading.Lock = None
-    
-    def __post_init__(self):
-        self.tokens = float(self.rate)
-        self.last_update = time.monotonic()
-        self._lock = threading.Lock()
+# Semaphore-based rate limiter for controlling CDN connection concurrency
+class RateLimiter:
+    """Semaphore-based rate limiter for controlling CDN connection concurrency."""
+    def __init__(self, rate: int):
+        self._semaphore = threading.Semaphore(rate)
     
     def take(self, tokens: int = 1) -> float:
-        """Take tokens, blocking until available. Returns wait time."""
-        with self._lock:
-            now = time.monotonic()
-            # Refill tokens based on elapsed time (assuming 1 token per second refill)
-            elapsed = now - self.last_update
-            self.tokens = min(self.rate, self.tokens + elapsed)
-            self.last_update = now
-            
-            if self.tokens >= tokens:
-                self.tokens -= tokens
-                return 0.0
-            
-            # Need to wait for tokens
-            wait_time = (tokens - self.tokens)  # ~1 token per second
-            self.tokens = 0
-            return wait_time
+        """Acquire semaphore tokens. Returns 0 on success, blocks otherwise."""
+        # Acquire one token (ignoring the tokens parameter for simplicity)
+        self._semaphore.acquire()
+        return 0.0
+    
+    def release(self, tokens: int = 1):
+        """Release semaphore tokens."""
+        for _ in range(tokens):
+            self._semaphore.release()
 
 
 @dataclass
@@ -720,9 +704,8 @@ async def _fetch_page_async(url: str, cookies: dict, ua: str) -> str | None:
         "X-Requested-With": "XMLHttpRequest",
         "Referer": f"{BASE_URL}/",
     }
+    # Use default SSL context (proper certificate verification)
     ssl_ctx = ssl_mod.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl_mod.CERT_NONE
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, cookies=cookies, ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=20)) as resp:
@@ -749,13 +732,6 @@ async def get_episode_list(anime_id: str, last_page: int) -> dict:
         f"{BASE_URL}/api?m=release&id={anime_id}&sort=episode_asc&page={p}"
         for p in range(1, last_page + 1)
     ]
-
-    if len(urls) > 1:
-        print(
-            Fore.WHITE +
-            f"[warn] SSL verification disabled for async episode fetches "
-            f"(aiohttp workaround)" + Fore.RESET
-        )
 
     responses = await _fetch_all_pages_async(urls, cookies, _user_agent)
 
@@ -1030,8 +1006,8 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
     progress = {"done": completed, "bytes": sum(s.size for s in segment_states if s.downloaded), "failed": 0}
     start_wall = time.time()
 
-    # Token bucket rate limiter (shared across workers)
-    rate_limiter = TokenBucket(_DL_RATE_LIMIT)
+    # Rate limiter (shared across workers)
+    rate_limiter = RateLimiter(_DL_RATE_LIMIT)
 
     def _download_segment(seg_state: SegmentState) -> bool:
         """Download a single segment with retries, backoff, and rate limiting."""
@@ -1246,7 +1222,9 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
                         f.write("title=Ending\n")
                     else:
                         f.write(f"title=Part {i}\n")
-            meta_args.extend(["-i", chapter_file, "-map_metadata", "1", "-map_chapters", "1"])
+            # Chapter input index depends on whether cover art was added
+            chapter_input_idx = 2 if thumb_path else 1
+            meta_args.extend(["-i", chapter_file, "-map_metadata", str(chapter_input_idx), "-map_chapters", str(chapter_input_idx)])
         
         # Add basic metadata
         if meta.title:
@@ -1273,6 +1251,12 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
 
     # Cleanup temp files (but keep state file for a bit in case of issues)
     shutil.rmtree(tmp_dir, ignore_errors=True)
+    # Also clean up sidecar state file
+    state_path = tmp_dir + _STATE_FILE_SUFFIX
+    try:
+        os.remove(state_path)
+    except OSError:
+        pass
 
     if result.returncode != 0:
         print(Fore.RED + f"failed (code {result.returncode})" + Fore.RESET)
