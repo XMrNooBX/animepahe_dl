@@ -62,7 +62,7 @@ def _unpack_payloads(html: str) -> list[str]:
         count = int(m.group(3))
         words = m.group(4).split("|")
 
-        # Build lookup table: base-encoded index → word
+        # Build lookup table: base-encoded index -> word
         def base_encode(val, b):
             chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
             if val < b:
@@ -74,7 +74,7 @@ def _unpack_payloads(html: str) -> list[str]:
             key = base_encode(i, base)
             lookup[key] = words[i] if i < len(words) and words[i] else key
 
-        # Unescape the template (\' → ', \\ → \)
+        # Unescape the template (\' -> ', \\ -> \)
         template = template_raw.replace("\\'", "'").replace("\\\\", "\\")
 
         # Replace all word-boundary tokens with their dictionary values

@@ -172,41 +172,33 @@ def fetch_episode_meta(anime_id: str, ep_session: str) -> EpisodeMeta | None:
         return None
 
 
-def fetch_all_episode_meta(anime_id: str, eps: dict) -> dict[int, EpisodeMeta]:
-    """Fetch metadata for all episodes using release API data + play page for extra info."""
+def fetch_all_episode_meta(anime_id: str, eps: dict, requested_eps: list[int] | None = None) -> dict[int, EpisodeMeta]:
+    """Fetch metadata for all episodes from play pages.
+    
+    Fetches play page data for requested episodes to get:
+    - duration (if available in HTML)
+    - snapshot/thumbnail URL
+    - audio type
+    - title
+    
+    Note: Duration is extracted from play page HTML if available.
+    For One Piece (1166 eps), this avoids 39 API calls to release API.
+    """
     meta = {}
     
-    # First, get release data which has duration
-    # We need to fetch all pages to get duration for all episodes
-    page_resp = _get(f"{BASE_URL}/api?m=release&id={anime_id}&sort=episode_asc&page=1")
-    page_resp.raise_for_status()
-    first_page = page_resp.json()
-    last_page = first_page.get("last_page", 1)
+    # Determine which episodes we actually need metadata for
+    if requested_eps is None:
+        requested_eps = list(eps.keys())
     
-    # Build duration map from release API
-    duration_map = {}
-    for page in range(1, last_page + 1):
-        if page == 1:
-            page_data = first_page
-        else:
-            resp = _get(f"{BASE_URL}/api?m=release&id={anime_id}&sort=episode_asc&page={page}")
-            resp.raise_for_status()
-            page_data = resp.json()
-        
-        for ep in page_data.get("data", []):
-            ep_num = ep["episode"]
-            if isinstance(ep_num, float) and ep_num == int(ep_num):
-                ep_num = int(ep_num)
-            duration_map[ep_num] = ep.get("duration", "")
+    ep_set = set(requested_eps)
     
-    # Now fetch play page data for each episode
+    # Fetch play page data for each requested episode
     for ep_num, ep_session in eps.items():
+        if requested_eps is not None and ep_num not in ep_set:
+            continue
         ep_meta = fetch_episode_meta(anime_id, ep_session)
         if ep_meta:
             ep_meta.episode = int(ep_num) if isinstance(ep_num, (int, float)) and ep_num == int(ep_num) else ep_num
-            # Override duration with release API data (more reliable)
-            if ep_meta.episode in duration_map:
-                ep_meta.duration = duration_map[ep_meta.episode]
             meta[ep_meta.episode] = ep_meta
     
     return meta
@@ -221,7 +213,8 @@ def download_thumbnail(url: str, tmp_dir: str) -> str | None:
             "User-Agent": _user_agent,
             "Referer": BASE_URL + "/",
         }
-        resp = requests.get(url, headers=headers, timeout=30)
+        cookies = {c.name: c.value for c in _session.cookies}
+        resp = requests.get(url, headers=headers, cookies=cookies, timeout=30)
         resp.raise_for_status()
         
         # Determine extension from URL or content-type
@@ -401,7 +394,7 @@ def _save_session_cache():
     try:
         with open(_CACHE_FILE, "w") as f:
             json.dump(cache, f, indent=2)
-        print(Fore.GREEN + f"[cache] session saved → reuse on next run" + Fore.RESET)
+        print(Fore.GREEN + f"[cache] session saved -> reuse on next run" + Fore.RESET)
     except OSError as e:
         print(Fore.YELLOW + f"[cache] could not save: {e}" + Fore.RESET)
 
@@ -426,7 +419,7 @@ def _try_cached_session() -> bool:
     # Reject caches older than 3 hours to be safe.
     age_s = time.time() - cache.get("saved_at", 0)
     if age_s > 3 * 3600:
-        print(Fore.YELLOW + f"[cache] expired ({age_s/3600:.1f}h old), re-solving…" + Fore.RESET)
+        print(Fore.YELLOW + f"[cache] expired ({age_s/3600:.1f}h old), re-solving..." + Fore.RESET)
         return False
 
     cookies = cache.get("cookies", {})
@@ -450,7 +443,7 @@ def _try_cached_session() -> bool:
             print(Fore.GREEN + f"[cache] loaded saved session ({age_min:.0f}m old) [OK]" + Fore.RESET)
             return True
         elif resp.status_code == 403:
-            print(Fore.YELLOW + f"[cache] cookies expired (403), re-solving…" + Fore.RESET)
+            print(Fore.YELLOW + f"[cache] cookies expired (403), re-solving..." + Fore.RESET)
             _session.cookies.clear()
             return False
         else:
@@ -463,7 +456,7 @@ def _try_cached_session() -> bool:
             print(Fore.YELLOW + f"[cache] server slow, using cached session ({age_min:.0f}m old)" + Fore.RESET)
             return True
         else:
-            print(Fore.YELLOW + f"[cache] server timeout + old cache ({age_min:.0f}m), re-solving…" + Fore.RESET)
+            print(Fore.YELLOW + f"[cache] server timeout + old cache ({age_min:.0f}m), re-solving..." + Fore.RESET)
             _session.cookies.clear()
             return False
     except Exception:
@@ -504,7 +497,7 @@ def _try_nodriver() -> bool:
         print(Fore.YELLOW + "[nodriver] not installed. Run: pip install nodriver" + Fore.RESET)
         return False
 
-    print(Fore.CYAN + "[nodriver] launching Chrome to solve Cloudflare challenge…" + Fore.RESET)
+    print(Fore.CYAN + "[nodriver] launching Chrome to solve Cloudflare challenge..." + Fore.RESET)
     print(Fore.CYAN + "[nodriver] a browser window will open - please don't close it" + Fore.RESET)
 
     async def _solve():
@@ -532,7 +525,7 @@ def _try_nodriver() -> bool:
             # Cloudflare challenge pages have "Just a moment" in content
             if "Just a moment" in page_content or "Checking" in page_content:
                 if elapsed % 15 == 0:
-                    print(Fore.YELLOW + f"[nodriver] still solving challenge… ({elapsed}s)" + Fore.RESET)
+                    print(Fore.YELLOW + f"[nodriver] still solving challenge... ({elapsed}s)" + Fore.RESET)
                 continue
 
             # If page has meaningful content (not just CF block), we're through
@@ -541,7 +534,7 @@ def _try_nodriver() -> bool:
                 break
 
             if elapsed % 15 == 0:
-                print(Fore.YELLOW + f"[nodriver] waiting for page load… ({elapsed}s, content len: {len(page_content)})" + Fore.RESET)
+                print(Fore.YELLOW + f"[nodriver] waiting for page load... ({elapsed}s, content len: {len(page_content)})" + Fore.RESET)
         else:
             print(Fore.RED + f"[nodriver] timed out after {max_wait}s" + Fore.RESET)
             try:
@@ -625,7 +618,7 @@ def _use_manual_cookies():
 def init_session():
     """
     Initialise the session. Called once at startup.
-    Priority: cached session → manual cookies → nodriver → bare session.
+    Priority: cached session -> manual cookies -> nodriver -> bare session.
     """
     global _session_initialised
     if _session_initialised:
@@ -783,16 +776,12 @@ async def get_episode_list(anime_id: str, last_page: int) -> dict:
         eps_clean[key] = v
 
     ep_keys = sorted(eps_clean.keys())
-    if ep_keys:
-        print(
-            Fore.WHITE + "\nAvailable episodes: " +
-            Fore.LIGHTMAGENTA_EX + f"{ep_keys[0]} - {ep_keys[-1]}" +
-            Fore.RESET
-        )
+    # NOTE: Episode range display is handled by caller (_select_episodes in main.py)
+    # to avoid duplicate prints
     return eps_clean
 
 
-# ── Episode page → kwik links ─────────────────────────────────────────────────
+# ── Episode page -> kwik links ─────────────────────────────────────────────────
 
 def get_ep_links(anime_id: str, ep_session: str) -> list:
     """
@@ -871,8 +860,8 @@ def _sanitize(name: str) -> str:
 
 # ── Parallel HLS downloader with resume & rate limiting ───────────────────────
 
-def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/", 
-                  meta: EpisodeMeta | None = None):
+def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/",
+                  meta: EpisodeMeta | None = None, no_resume: bool = False):
     """
     Download HLS stream to  <title>/<title> ep_XX.mp4.
 
@@ -892,11 +881,11 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
 
     # Skip if already downloaded
     if os.path.exists(out_file_abs) and os.path.getsize(out_file_abs) > 0:
-        print(Fore.GREEN + f"\n[skip] Ep {ep_str} already downloaded → .{os.sep}{out_file}" + Fore.RESET)
+        print(Fore.GREEN + f"\n[skip] Ep {ep_str} already downloaded -> .{os.sep}{out_file}" + Fore.RESET)
         _log_event("skip_existing", episode=ep_str, output=out_file, size=os.path.getsize(out_file_abs))
         return
 
-    print(Fore.LIGHTYELLOW_EX + f"\nDownloading Ep {ep_str} → .{os.sep}{out_file}" + Fore.RESET)
+    print(Fore.LIGHTYELLOW_EX + f"\nDownloading Ep {ep_str} -> .{os.sep}{out_file}" + Fore.RESET)
     _log_event("download_start", episode=ep_str, m3u8_url=m3u8_url, output=out_file)
 
     # ── Step 1: Fetch and parse m3u8 playlist ─────────────────────────────────
@@ -916,11 +905,19 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
     m3u8_text = m3u8_resp.text
     m3u8_lines = m3u8_text.strip().split('\n')
 
-    # Extract segment URLs
+    # Extract segment URLs and calculate total duration from #EXTINF tags
     segments = []
-    for line in m3u8_lines:
+    total_duration = 0.0
+    for i, line in enumerate(m3u8_lines):
         line = line.strip()
-        if line and not line.startswith('#'):
+        if line.startswith('#EXTINF:'):
+            # Format: #EXTINF:<duration>,<title>
+            try:
+                duration_str = line.split(':', 1)[1].split(',')[0]
+                total_duration += float(duration_str)
+            except (ValueError, IndexError):
+                pass
+        elif line and not line.startswith('#'):
             segments.append(line)
 
     if not segments:
@@ -933,7 +930,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
 
     total_segments = len(segments)
     encrypted = "encrypted, " if key_urls else ""
-    print(Fore.WHITE + f"  {total_segments} segments ({encrypted}{_DL_WORKERS} workers, {_DL_RATE_LIMIT} rate limit)…" + Fore.RESET)
+    print(Fore.WHITE + f"  {total_segments} segments ({encrypted}{_DL_WORKERS} workers, {_DL_RATE_LIMIT} rate limit)..." + Fore.RESET)
 
     # ── Step 2: Check for resume state ────────────────────────────────────────
     # We'll use a temp dir named after the episode for easier resumption
@@ -944,10 +941,10 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
     # Try to load existing state
     existing_state = _load_download_state(state_path)
     resume = False
-    if existing_state and existing_state.m3u8_url == m3u8_url:
+    if not no_resume and existing_state and existing_state.m3u8_url == m3u8_url:
         # Verify the existing temp dir and segments
         resume = True
-        print(Fore.CYAN + f"  [resume] Found existing download state, verifying…" + Fore.RESET)
+        print(Fore.CYAN + f"  [resume] Found existing download state, verifying..." + Fore.RESET)
         _log_event("resume_attempt", episode=ep_str, temp_dir=tmp_dir)
 
     # ── Step 3: Create temp dir, download key + segments in parallel ──────────
@@ -957,7 +954,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
         os.makedirs(tmp_dir, exist_ok=True)
 
     # Download encryption key(s) to temp dir
-    key_map = {}  # remote_url → local_filename
+    key_map = {}  # remote_url -> local_filename
     for i, key_url in enumerate(key_urls):
         key_filename = f"key_{i}.key"
         key_path = os.path.join(tmp_dir, key_filename)
@@ -976,7 +973,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
         key_map[key_url] = key_filename
 
     # Map remote segment URLs to local filenames
-    seg_filenames = {}  # remote_url → local_filename
+    seg_filenames = {}  # remote_url -> local_filename
     for idx, url in enumerate(segments):
         seg_filenames[url] = f"seg_{idx:05d}.ts"
 
@@ -1159,7 +1156,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
     # Download segments in parallel
     remaining_segments = [s for s in segment_states if not s.downloaded]
     if remaining_segments:
-        print(Fore.WHITE + f"  Downloading {len(remaining_segments)} remaining segments…" + Fore.RESET)
+        print(Fore.WHITE + f"  Downloading {len(remaining_segments)} remaining segments..." + Fore.RESET)
         with concurrent.futures.ThreadPoolExecutor(max_workers=_DL_WORKERS) as executor:
             executor.map(_download_segment, remaining_segments)
 
@@ -1177,7 +1174,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
         return
 
     # ── Step 4: Build local m3u8 with relative paths ──────────────────────────
-    print(Fore.WHITE + "  Building local m3u8…" + Fore.RESET)
+    print(Fore.WHITE + "  Building local m3u8..." + Fore.RESET)
     with open(local_m3u8_path, "w") as f:
         for line in m3u8_lines:
             stripped = line.strip()
@@ -1193,7 +1190,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
 
     # ── Step 5: ffmpeg decrypts + muxes to mp4 (local I/O, fast) ──────────────
     # Also embed metadata (cover art, chapters) if available
-    print(Fore.WHITE + "  Decrypting + muxing to mp4…" + Fore.RESET, end=" ", flush=True)
+    print(Fore.WHITE + "  Decrypting + muxing to mp4..." + Fore.RESET, end=" ", flush=True)
     
     # Prepare metadata args
     meta_args = []
@@ -1205,7 +1202,24 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
         if meta.snapshot_url:
             thumb_path = download_thumbnail(meta.snapshot_url, tmp_dir)
             if thumb_path:
-                meta_args.extend(["-i", thumb_path])
+                # Convert WebP to JPEG if needed (MP4 doesn't support WebP as attached pic)
+                cover_path = thumb_path
+                if thumb_path.lower().endswith('.webp'):
+                    # Convert WebP to JPEG using PIL or ffmpeg
+                    converted_path = os.path.join(tmp_dir, "cover.jpg")
+                    try:
+                        # Try PIL first
+                        from PIL import Image
+                        img = Image.open(thumb_path)
+                        img.convert('RGB').save(converted_path, 'JPEG', quality=90)
+                        cover_path = converted_path
+                    except Exception:
+                        # Fallback to ffmpeg
+                        cmd_conv = ["ffmpeg", "-y", "-i", thumb_path, "-c:v", "mjpeg", "-q:v", "2", cover_path]
+                        subprocess.run(cmd_conv, capture_output=True, check=False, cwd=tmp_dir)
+                        cover_path = converted_path
+                
+                meta_args.extend(["-i", cover_path])
                 meta_args.extend([
                     "-map", "0:v", "-map", "0:a",
                     "-map", "1:v",
@@ -1273,11 +1287,11 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
             avg_speed = final_mb / wall_total if wall_total > 0.5 else 0.0
             print(Fore.GREEN + "done" + Fore.RESET)
             print(
-                Fore.GREEN + f"  Done → .{os.sep}{out_file}  "
+                Fore.GREEN + f"  Done -> .{os.sep}{out_file}  "
                 f"({final_mb:.1f} MB in {wall_total:.0f}s, avg {avg_speed:.2f} MB/s)" + Fore.RESET
             )
             _log_event("download_complete", episode=ep_str, output=out_file, 
                       size_mb=final_mb, duration_s=wall_total, avg_speed_mbps=avg_speed)
         except OSError:
-            print(Fore.GREEN + f"  Done → .{os.sep}{out_file}" + Fore.RESET)
+            print(Fore.GREEN + f"  Done -> .{os.sep}{out_file}" + Fore.RESET)
             _log_event("download_complete", episode=ep_str, output=out_file)

@@ -9,10 +9,10 @@ Requires either:
 See README.md for setup instructions.
 
 Episode input examples:
-  5          → single episode
-  1 3 7      → episodes 1, 3 and 7
-  1-12       → range
-  1-5 10 15  → range + individual picks
+  5          -> single episode
+  1 3 7      -> episodes 1, 3 and 7
+  1-12       -> range
+  1-5 10 15  -> range + individual picks
 
 Usage examples:
   python main.py                                    # Interactive mode
@@ -124,10 +124,10 @@ Quality options (index or name):
   4  360p Dub    5  720p Dub    6  1080p Dub
 
 Episode format examples:
-  5         → single episode
-  1 3 7     → episodes 1, 3 and 7
-  1-12      → range 1 to 12
-  1-5 10 15 → range + individual picks
+  5         -> single episode
+  1 3 7     -> episodes 1, 3 and 7
+  1-12      -> range 1 to 12
+  1-5 10 15 -> range + individual picks
 
 Examples:
   %(prog)s                           # Fully interactive
@@ -150,6 +150,8 @@ Examples:
                    help="Disable resume (re-download even if partial state exists)")
     p.add_argument("-p", "--parallel", type=int, default=1, metavar="N",
                    help="Number of episodes to download in parallel (default: 1)")
+    p.add_argument("--no-meta", action="store_true",
+                   help="Skip fetching episode metadata (chapters, cover art) for faster startup")
     return p
 
 
@@ -157,7 +159,7 @@ Examples:
 
 def _search_anime(name: str) -> dict:
     """Search for anime, with retries."""
-    print(Fore.GREEN + "Searching…" + Fore.RESET)
+    print(Fore.GREEN + "Searching..." + Fore.RESET)
     results = None
     last_err = None
     for attempt in range(1, 4):
@@ -169,7 +171,7 @@ def _search_anime(name: str) -> dict:
         except Exception as e:
             last_err = e
             if attempt < 3:
-                print(Fore.YELLOW + f"[retry] attempt {attempt} failed ({e}), retrying…" + Fore.RESET)
+                print(Fore.YELLOW + f"[retry] attempt {attempt} failed ({e}), retrying..." + Fore.RESET)
                 time.sleep(2)
 
     if results is None:
@@ -187,22 +189,28 @@ def _select_anime(results: dict, anime_arg: str | None) -> tuple[str, str]:
     ids = scraper.show_results_get_id(results)
     
     if anime_arg:
-        # Try to match by name (case-insensitive partial)
-        matches = [(i, t) for i, t in enumerate(results.keys()) if anime_arg.lower() in t.lower()]
-        if len(matches) == 1:
-            pick = matches[0][0]
-            print(Fore.GREEN + f"\nAuto-selected: {matches[0][1]}" + Fore.RESET)
+        # First try exact match (case-insensitive)
+        exact_matches = [(i, t) for i, t in enumerate(results.keys()) if t.lower() == anime_arg.lower()]
+        if len(exact_matches) == 1:
+            pick = exact_matches[0][0]
+            print(Fore.GREEN + f"\nAuto-selected (exact): {exact_matches[0][1]}" + Fore.RESET)
         else:
-            # Ambiguous or no match - fall back to interactive
-            print(Fore.YELLOW + f"[warn] '{anime_arg}' matched {len(matches)} results, showing all:" + Fore.RESET)
-            for i, (idx, title) in enumerate(matches, 1):
-                print(f"  {i}. {title}")
-            try:
-                pick = int(input(Fore.CYAN + "\nPick a number: " + Fore.RESET)) - 1
-                pick = matches[pick][0]
-            except (ValueError, IndexError):
-                print(Fore.RED + "Invalid selection." + Fore.RESET)
-                sys.exit(1)
+            # Fall back to partial match
+            matches = [(i, t) for i, t in enumerate(results.keys()) if anime_arg.lower() in t.lower()]
+            if len(matches) == 1:
+                pick = matches[0][0]
+                print(Fore.GREEN + f"\nAuto-selected (partial): {matches[0][1]}" + Fore.RESET)
+            else:
+                # Ambiguous or no match - fall back to interactive
+                print(Fore.YELLOW + f"[warn] '{anime_arg}' matched {len(matches)} results, showing all:" + Fore.RESET)
+                for i, (idx, title) in enumerate(matches, 1):
+                    print(f"  {i}. {title}")
+                try:
+                    pick = int(input(Fore.CYAN + "\nPick a number: " + Fore.RESET)) - 1
+                    pick = matches[pick][0]
+                except (ValueError, IndexError):
+                    print(Fore.RED + "Invalid selection." + Fore.RESET)
+                    sys.exit(1)
     else:
         # Fully interactive
         try:
@@ -218,7 +226,7 @@ def _select_anime(results: dict, anime_arg: str | None) -> tuple[str, str]:
 
 def _fetch_episodes(anime_id: str) -> dict:
     """Fetch all episodes for an anime."""
-    print(Fore.GREEN + "Fetching episode list…" + Fore.RESET)
+    print(Fore.GREEN + "Fetching episode list..." + Fore.RESET)
     try:
         page_resp = scraper._get(
             f"{scraper.BASE_URL}/api?m=release&id={anime_id}&sort=episode_asc&page=1"
@@ -279,7 +287,28 @@ def _fetch_episode_links(anime_id: str, eps: dict, ep_list: list) -> dict[int, l
     return ep_links
 
 
-def _select_quality(links: list, quality_arg: str | None, batch_mode: bool, 
+def _match_quality(links: list, target_res: str, target_audio: str) -> int | None:
+    """Find link index matching target resolution and audio type."""
+    target_res = target_res.lower().strip()
+    target_audio = target_audio.lower().strip()
+    
+    for i, item in enumerate(links):
+        quality = item[1].strip().lower() if len(item) > 1 else ""
+        audio = item[2].strip().lower() if len(item) > 2 else ""
+        
+        # Match resolution (e.g., "1080" matches "1080")
+        if target_res in quality or quality in target_res:
+            # Match audio type
+            if target_audio in ["sub", "jpn", ""] and audio in ["sub", "jpn", ""]:
+                return i
+            if target_audio in ["dub", "eng"] and audio in ["dub", "eng"]:
+                return i
+            if not target_audio or target_audio == "auto":
+                return i
+    return None
+
+
+def _select_quality(links: list, quality_arg: str | None, batch_mode: bool,
                      saved_quality: int | None, remaining_eps: int) -> tuple[int, int | None]:
     """Interactive or auto quality selection. Returns (choice, new_saved_quality)."""
     kwik_urls = scraper.show_dl_opts(links)
@@ -287,13 +316,26 @@ def _select_quality(links: list, quality_arg: str | None, batch_mode: bool,
     # Auto-select if quality arg provided and valid
     if quality_arg is not None:
         q_idx = parse_quality_arg(quality_arg)
-        if q_idx is not None and q_idx < len(kwik_urls):
-            choice = q_idx
-            quality_label = links[choice][1].strip() if len(links[choice]) > 1 else "?"
-            print(Fore.WHITE + f"Using CLI quality: {quality_label}" + Fore.RESET)
-            if batch_mode:
-                return choice, choice  # Save for all remaining
-            return choice, None
+        if q_idx is not None:
+            # Map QUALITY_MAP index to actual link index by resolution/audio
+            if 0 <= q_idx < len(QUALITY_MAP):
+                target_res, target_audio = QUALITY_MAP[q_idx + 1]
+                matched_idx = _match_quality(links, target_res, target_audio)
+                if matched_idx is not None:
+                    choice = matched_idx
+                    quality_label = links[choice][1].strip() if len(links[choice]) > 1 else "?"
+                    print(Fore.WHITE + f"Using CLI quality: {quality_label}" + Fore.RESET)
+                    if batch_mode:
+                        return choice, choice  # Save for all remaining
+                    return choice, None
+            # Fallback to direct index if QUALITY_MAP mapping fails
+            if q_idx < len(kwik_urls):
+                choice = q_idx
+                quality_label = links[choice][1].strip() if len(links[choice]) > 1 else "?"
+                print(Fore.WHITE + f"Using CLI quality: {quality_label}" + Fore.RESET)
+                if batch_mode:
+                    return choice, choice
+                return choice, None
 
     # Use saved quality if available
     if saved_quality is not None and saved_quality < len(kwik_urls):
@@ -348,7 +390,7 @@ def _resolve_streams(anime_id: str, ep_links: dict[int, list], quality_arg: str 
             continue
             
         kwik_url = links[choice][0]
-        print(Fore.WHITE + "Resolving stream URL…" + Fore.RESET)
+        print(Fore.WHITE + "Resolving stream URL..." + Fore.RESET)
         m3u8 = get_stream_url(kwik_url)
         if not m3u8:
             print(Fore.RED + f"[skip] could not resolve stream for ep {ep}" + Fore.RESET)
@@ -360,7 +402,7 @@ def _resolve_streams(anime_id: str, ep_links: dict[int, list], quality_arg: str 
     return dl_queue
 
 
-def _download_episodes(dl_queue: dict[int, str], title: str, output_dir: str | None, 
+def _download_episodes(dl_queue: dict[int, str], title: str, output_dir: str | None,
                         no_resume: bool, metadata: dict[int, EpisodeMeta] | None = None,
                         parallel: int = 1):
     """Download all resolved episodes, optionally in parallel."""
@@ -369,31 +411,43 @@ def _download_episodes(dl_queue: dict[int, str], title: str, output_dir: str | N
         sys.exit(1)
 
     print(Fore.CYAN + f"\n{'='*40}" + Fore.RESET)
-    print(Fore.CYAN + f"Downloading {len(dl_queue)} episode(s)" + 
+    print(Fore.CYAN + f"Downloading {len(dl_queue)} episode(s)" +
           (f" with {parallel} parallel" if parallel > 1 else "") + "..." + Fore.RESET)
+    if no_resume:
+        print(Fore.YELLOW + "Resume disabled (--no-resume)" + Fore.RESET)
     print(Fore.CYAN + f"{'='*40}" + Fore.RESET)
 
-    if output_dir:
+    # Avoid os.chdir in parallel mode - use absolute paths instead
+    if output_dir and parallel > 1:
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        # Don't chdir in parallel mode - pass absolute paths to scraper
+        output_dir_abs = os.path.abspath(output_dir)
+        chdir_needed = False
+    elif output_dir:
         import os
         orig_cwd = os.getcwd()
         os.makedirs(output_dir, exist_ok=True)
         os.chdir(output_dir)
+        chdir_needed = True
+    else:
+        chdir_needed = False
 
     def _download_one(ep_m3u8_meta: tuple) -> tuple[int, bool]:
         ep, m3u8, ep_meta = ep_m3u8_meta
         try:
-            scraper.download_vid(m3u8, title, ep, meta=ep_meta)
+            scraper.download_vid(m3u8, title, ep, meta=ep_meta, no_resume=no_resume)
             return ep, True
         except Exception as e:
             print(Fore.RED + f"[error] Episode {ep} failed: {e}" + Fore.RESET)
             return ep, False
 
-    episodes_to_download = [(ep, m3u8, metadata.get(ep) if metadata else None) 
+    episodes_to_download = [(ep, m3u8, metadata.get(ep) if metadata else None)
                             for ep, m3u8 in dl_queue.items()]
 
     if parallel > 1 and len(episodes_to_download) > 1:
         # Parallel download with progress tracking
-        print(Fore.WHITE + f"  Starting {parallel} parallel downloads…" + Fore.RESET)
+        print(Fore.WHITE + f"  Starting {parallel} parallel downloads..." + Fore.RESET)
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
             future_to_ep = {executor.submit(_download_one, item): item[0] for item in episodes_to_download}
             for future in concurrent.futures.as_completed(future_to_ep):
@@ -406,9 +460,9 @@ def _download_episodes(dl_queue: dict[int, str], title: str, output_dir: str | N
         # Sequential download (original behavior)
         for ep, m3u8 in dl_queue.items():
             ep_meta = metadata.get(ep) if metadata else None
-            scraper.download_vid(m3u8, title, ep, meta=ep_meta)
+            scraper.download_vid(m3u8, title, ep, meta=ep_meta, no_resume=no_resume)
 
-    if output_dir:
+    if chdir_needed:
         os.chdir(orig_cwd)
 
     print(Fore.GREEN + "\nAll done!" + Fore.RESET)
@@ -419,7 +473,7 @@ def main():
     args = parser.parse_args()
 
     # 1. Init session (cached cookies or nodriver)
-    print(Fore.CYAN + "Initialising session…" + Fore.RESET)
+    print(Fore.CYAN + "Initialising session..." + Fore.RESET)
     scraper.init_session()
 
     # 2. Search
@@ -463,11 +517,13 @@ def main():
     # 8. Resolve streams
     dl_queue = _resolve_streams(anime_id, ep_links, args.quality, args.batch)
 
-    # 9. Fetch episode metadata for chapters & cover art
+    # 9. Fetch episode metadata for chapters & cover art (unless --no-meta)
     metadata = {}
-    if dl_queue:
-        print(Fore.WHITE + "\nFetching episode metadata…" + Fore.RESET)
-        metadata = scraper.fetch_all_episode_meta(anime_id, eps)
+    if dl_queue and not args.no_meta:
+        print(Fore.WHITE + "\nFetching episode metadata..." + Fore.RESET)
+        metadata = scraper.fetch_all_episode_meta(anime_id, eps, ep_list)
+    elif args.no_meta:
+        print(Fore.YELLOW + "\nSkipping metadata fetch (--no-meta)" + Fore.RESET)
 
     # 10. Download
     _download_episodes(dl_queue, title, args.output_dir, args.no_resume, metadata, args.parallel)
