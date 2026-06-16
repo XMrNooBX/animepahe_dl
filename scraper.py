@@ -1034,7 +1034,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
 
             try:
                 resp = requests.get(url, headers=dl_headers, timeout=_DL_TIMEOUT, stream=True)
-                
+
                 # Handle HTTP errors with retry logic
                 if resp.status_code in (429, 500, 502, 503, 504):
                     # Check for Retry-After header
@@ -1046,7 +1046,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
                             wait = backoff
                     else:
                         wait = backoff
-                    
+
                     # Add jitter
                     wait += random.uniform(0, wait * _DL_JITTER)
                     _log_event("segment_retry", episode=ep_str, segment=idx, attempt=attempt+1,
@@ -1063,7 +1063,7 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
                         raise requests.HTTPError(f"HTTP {resp.status_code} after {max_retries} retries")
 
                 resp.raise_for_status()
-                
+
                 # Download with streaming to handle large segments
                 with open(seg_path, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=8192):
@@ -1107,25 +1107,28 @@ def download_vid(m3u8_url: str, title: str, ep, referer: str = "https://kwik.cx/
                 return True
 
             except Exception as e:
-                seg_state.retries = attempt + 1
-                seg_state.last_error = str(e)
-                
                 if attempt == max_retries - 1:
+                    seg_state.retries = max_retries
+                    seg_state.last_error = str(e)
+                    _log_event("segment_failed", episode=ep_str, segment=idx,
+                              error=str(e), retries=max_retries, url=url)
+                    _save_download_state(download_state)
                     with lock:
                         progress["failed"] += 1
                         progress["done"] += 1
-                    _log_event("segment_failed", episode=ep_str, segment=idx, 
-                              error=str(e), retries=max_retries, url=url)
-                    _save_download_state(download_state)
                     return False
-                
-                # Exponential backoff with jitter
-                wait = backoff + random.uniform(0, backoff * _DL_JITTER)
-                _log_event("segment_retry", episode=ep_str, segment=idx, attempt=attempt+1,
-                          wait=wait, error=str(e), url=url)
-                time.sleep(wait)
-                backoff = min(backoff * 2, _DL_MAX_BACKOFF)
-                _save_download_state(download_state)
+                else:
+                    # Exponential backoff with jitter
+                    wait = backoff + random.uniform(0, backoff * _DL_JITTER)
+                    _log_event("segment_retry", episode=ep_str, segment=idx, attempt=attempt+1,
+                              wait=wait, error=str(e), url=url)
+                    time.sleep(wait)
+                    backoff = min(backoff * 2, _DL_MAX_BACKOFF)
+                    seg_state.retries = attempt + 1
+                    seg_state.last_error = str(e)
+                    _save_download_state(download_state)
+            finally:
+                rate_limiter.release()
 
         return False
 

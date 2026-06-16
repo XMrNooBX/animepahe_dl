@@ -69,7 +69,11 @@ def parse_episode_input(raw: str, available: set) -> list:
                 print(Fore.RED + f"[skip] bad range: {token}" + Fore.RESET)
         else:
             try:
-                ep_in.append(float(token))
+                ep = float(token)
+                # Normalize: if it's a whole number, store as int for cleaner display
+                if ep == int(ep):
+                    ep = int(ep)
+                ep_in.append(ep)
             except ValueError:
                 print(Fore.RED + f"[skip] bad token: {token}" + Fore.RESET)
 
