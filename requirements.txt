@@ -1,0 +1,4 @@
+curl-cffi>=0.7.1
+colorama>=0.4.6
+nodriver>=0.50.0
+Pillow>=10.0.0
