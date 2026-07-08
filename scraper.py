@@ -218,7 +218,7 @@ def fetch_all_episode_meta(anime_id: str, eps: dict, requested_eps: list[int] | 
             continue
         ep_meta = fetch_episode_meta(anime_id, ep_session)
         if ep_meta:
-            ep_meta.episode = int(ep_num) if isinstance(ep_num, (int, float)) and ep_num == int(ep_num) else ep_num
+            ep_meta.episode = int(ep_num)
             meta[ep_meta.episode] = ep_meta
     
     return meta
@@ -376,6 +376,8 @@ _session = cffi_requests.Session(impersonate="chrome")
 _RETRY_TOTAL = 3
 _RETRY_BACKOFF = 1
 _RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+_RETRY_429_BASE_BACKOFF = 5      # longer base backoff specifically for rate-limit responses
+_RETRY_429_MAX_BACKOFF = 60      # cap for 429 backoff
 
 _cf_cookies: dict = {}      # populated by nodriver or manual mode
 _user_agent: str = (
@@ -455,7 +457,7 @@ def _try_cached_session() -> bool:
             # Other errors (500, etc.) - assume cookies are fine, server is just being flaky
             print(Fore.YELLOW + f"[cache] server returned {resp.status_code}, using cached session anyway ({age_min:.0f}m old)" + Fore.RESET)
             return True
-    except requests.exceptions.Timeout:
+    except cffi_requests.exceptions.Timeout:
         # Server slow but not blocked - trust the cache if it's recent
         if age_s < 30 * 60:  # less than 30 min old
             print(Fore.YELLOW + f"[cache] server slow, using cached session ({age_min:.0f}m old)" + Fore.RESET)
@@ -655,7 +657,12 @@ def init_session():
 
 
 def _get(url: str, **kwargs):
-    """Rate-limited GET using the initialised session, with manual retry logic."""
+    """Rate-limited GET using the initialised session, with manual retry logic.
+
+    429 (Too Many Requests) gets a dedicated longer backoff (5s base,
+    exponential up to 60s) and respects the server's Retry-After header.
+    Other retryable status codes keep the original short backoff.
+    """
     time.sleep(REQUEST_DELAY)
     init_session()
     headers = _build_headers(kwargs.pop("referer", None))
@@ -665,7 +672,22 @@ def _get(url: str, **kwargs):
             resp = _session.get(url, headers=headers, timeout=30, **kwargs)
             if resp.status_code in _RETRY_STATUS_CODES and attempt < _RETRY_TOTAL:
                 last_err = Exception(f"HTTP {resp.status_code}")
-                time.sleep(_RETRY_BACKOFF * (2 ** attempt))
+                if resp.status_code == 429:
+                    # Respect Retry-After header if the server sends one
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            wait = min(float(retry_after), _RETRY_429_MAX_BACKOFF)
+                        except ValueError:
+                            wait = _RETRY_429_BASE_BACKOFF * (2 ** attempt)
+                    else:
+                        wait = min(_RETRY_429_BASE_BACKOFF * (2 ** attempt),
+                                   _RETRY_429_MAX_BACKOFF)
+                    # Add jitter to avoid thundering herd
+                    wait += random.uniform(0, wait * 0.25)
+                else:
+                    wait = _RETRY_BACKOFF * (2 ** attempt)
+                time.sleep(wait)
                 continue
             return resp
         except Exception as e:

@@ -10,13 +10,12 @@ It automatically solves Cloudflare challenges using an undetected Chrome instanc
 - **Auto Cloudflare Bypass**: Uses `nodriver` to invisibly clear Cloudflare Turnstile challenges.
 - **Batch Downloading**: Download single episodes, lists (`1 3 5`), or ranges (`1-12`).
 - **Batch Quality Application**: Choose a resolution once and automatically apply it to all remaining episodes in the queue.
-- **Parallel Episode Downloads**: Download multiple episodes simultaneously with `-p N`.
-- **Resume Support**: Skips already downloaded and complete episodes; can resume interrupted downloads.
-- **Reliable Networking**: Includes automatic retries for transient API and download failures with exponential backoff.
+- **Parallel Episode Downloads**: Automatically downloads multiple episodes simultaneously (up to 6 concurrent).
+- **Resume Support**: Automatically resumes interrupted downloads from where they left off.
+- **Reliable Networking**: Includes automatic retries for transient API and download failures with exponential backoff. Rate-limited (429) responses get dedicated longer backoff with jitter.
 - **Episode Metadata**: Embeds episode title, show name, episode ID, and auto-generated chapters (Start, Opening, Ending, End).
 - **Cover Art**: Downloads and embeds episode thumbnails as attached pictures.
 - **Custom Output Directory**: Specify download location with `-o`.
-- **CLI & Interactive Modes**: Run fully non-interactive or with guided prompts.
 
 ## Prerequisites
 
@@ -45,44 +44,16 @@ python main.py
 ```
 Prompts for anime name, episode selection, and quality for each episode.
 
-### Batch / Non-Interactive Mode
+### With Custom Output Directory
 ```bash
-# Download episodes 1-5 with 1080p Sub, no prompts
-python main.py -a "One Piece" -e 1-5 -q 3 -b
-
-# Download episodes 1-10 with 720p Dub, parallel (3 at a time), custom output dir
-python main.py -a "One Piece" -e 1-10 -q 5 -b -p 3 -o /media/anime
-
-# Download single episode with 1080p Dub
-python main.py -a "One Piece" -e 100 -q 1080dub
-
-# List available qualities then exit
-python main.py -a "Witch Hat Atelier" --list
+python main.py -o /media/anime
 ```
 
 ### CLI Options
 
 | Option | Description |
 |--------|-------------|
-| `-a`, `--anime NAME` | Anime name to search (skips interactive search) |
-| `-e`, `--episodes LIST` | Episodes to download (e.g., `1-5`, `1 3 7`, `1-5 10`) |
-| `-q`, `--quality PRESET` | Quality preset: `1-6` or names like `1080p`, `720dub`, `360p` |
 | `-o`, `--output-dir PATH` | Custom output directory (default: current dir) |
-| `-b`, `--batch` | Batch mode: apply `--quality` to all episodes, skip prompts |
-| `-p`, `--parallel N` | Number of episodes to download in parallel (default: 1) |
-| `--list` | List episodes & qualities after anime selection, then exit |
-| `--no-resume` | Disable resume (re-download even if partial state exists) |
-
-### Quality Presets
-
-| Index | Name | Resolution | Audio |
-|-------|------|------------|-------|
-| 1 | `360p` / `360sub` | 360p | Sub |
-| 2 | `720p` / `720sub` | 720p | Sub |
-| 3 | `1080p` / `1080sub` | 1080p | Sub |
-| 4 | `360dub` | 360p | Dub |
-| 5 | `720dub` | 720p | Dub |
-| 6 | `1080dub` | 1080p | Dub |
 
 ### Episode Format Examples
 
@@ -91,7 +62,19 @@ python main.py -a "Witch Hat Atelier" --list
 | `5` | Single episode 5 |
 | `1 3 7` | Episodes 1, 3, and 7 |
 | `1-12` | Range 1 to 12 |
+| `5-` | Episode 5 to the last available (confirms before proceeding) |
 | `1-5 10 15` | Range 1-5 plus episodes 10 and 15 |
+
+### Navigation
+
+You can go back to the previous step at any prompt by entering `*`:
+
+| Where you are | What `*` does |
+|---|---|
+| Enter anime name | Exits the script |
+| Pick anime from results | Goes back to entering a name |
+| Episode selection | Goes back to picking an anime |
+| Quality selection | Goes back to episode selection |
 
 ## Cloudflare Bypass Modes
 
